@@ -7,7 +7,7 @@ TG_CHAT = os.environ["TG_CHAT_ID"]
 TD_KEY = os.environ.get("TD_API_KEY", "")
 
 SL, TP1, TP2 = 9.0, 7.0, 15.0
-TOUCH = 2.0
+TOUCH = 3.0
 CLUSTER = 4.0
 COOLDOWN_CANDLES = 6
 FRESH_MINUTES = 4.5
@@ -75,10 +75,9 @@ def get_bias(df):
     m15 = df["close"].resample("15min").last().dropna()
     e20 = m15.ewm(span=20).mean().iloc[-1]
     e50 = m15.ewm(span=50).mean().iloc[-1]
-    p = m15.iloc[-1]
-    if e20 < e50 and p < e20:
+    if e20 < e50:
         return "SELL"
-    if e20 > e50 and p > e20:
+    if e20 > e50:
         return "BUY"
     return "NONE"
 
@@ -123,15 +122,34 @@ def check(df):
     up = c.high - max(c.open, c.close)
     dn = min(c.open, c.close) - c.low
 
-    if bias == "SELL" and c.close < c.open and up >= body:
+    if bias == "SELL" and c.close < c.open and up >= 0.5 * body:
         for z in cluster(pivots(df, "high")):
             if c.high >= z - TOUCH and c.high <= z + 6 and c.close < z:
                 return "SELL", c.close, z
-    if bias == "BUY" and c.close > c.open and dn >= body:
+    if bias == "BUY" and c.close > c.open and dn >= 0.5 * body:
         for z in cluster(pivots(df, "low")):
             if c.low <= z + TOUCH and c.low >= z - 6 and c.close > z:
                 return "BUY", c.close, z
     return None
+
+
+def explain(df):
+    bias = get_bias(df)
+    p = df.iloc[-1].close
+    hi = [z for z in cluster(pivots(df, "high")) if z > p]
+    lo = [z for z in cluster(pivots(df, "low")) if z < p]
+    s = f"Trend: {bias}\nQiymət: {p:.2f}"
+    if hi:
+        z = min(hi)
+        s += f"\nYaxın müqavimət: {z:.2f} (+{z - p:.1f})"
+    else:
+        s += "\nYaxın müqavimət: yoxdur"
+    if lo:
+        z = max(lo)
+        s += f"\nYaxın dəstək: {z:.2f} (-{p - z:.1f})"
+    else:
+        s += "\nYaxın dəstək: yoxdur"
+    return s
 
 
 def send(text):
@@ -152,8 +170,7 @@ def main():
     print(f"Son sam: {t}, baglanib: {closed_ago:.1f} deq evvel, menbe: {src}")
 
     if manual:
-        txt = (f"Mənbə: {src}\nSon şam: {t} UTC\nSon qiymət: {df.iloc[-1].close:.2f}\n"
-               f"Bunu brokerindəki qiymətlə müqayisə et.")
+        txt = f"Mənbə: {src}\nSon şam: {t} UTC\n" + explain(df)
         if errs:
             txt += "\nXəbərdarlıq: " + " | ".join(errs)[:300]
         send(txt)
@@ -164,6 +181,10 @@ def main():
     if closed_ago > FRESH_MINUTES:
         print("Sam kohnedir, kecildi.")
         return
+
+    if t.minute == 55:
+        send("Saatlıq status (bot işləyir)\n" + explain(df) + f"\nMənbə: {src}")
+
     if in_blackout(t):
         print("Xeber saati, kecildi.")
         return
@@ -198,6 +219,7 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
+        manual = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+        if manual or pd.Timestamp.now(tz="UTC").minute < 5:
             send("XETA: " + repr(e)[:400])
         raise
