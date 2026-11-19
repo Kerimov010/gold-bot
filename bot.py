@@ -4,6 +4,7 @@ import pandas as pd
 
 TG_TOKEN = os.environ["TG_TOKEN"]
 TG_CHAT = os.environ["TG_CHAT_ID"]
+TD_KEY = os.environ.get("TD_API_KEY", "")
 
 SL, TP1, TP2 = 9.0, 7.0, 15.0
 TOUCH = 2.0
@@ -11,7 +12,23 @@ CLUSTER = 4.0
 COOLDOWN_CANDLES = 6
 FRESH_MINUTES = 4.5
 NO_TRADE_UTC = []
-OFFSET = 0.0   # broker qiyməti minus mənbə qiyməti (sonra təyin edəcəyik)
+
+
+def from_twelve():
+    r = requests.get(
+        "https://api.twelvedata.com/time_series",
+        params={"symbol": "XAU/USD", "interval": "5min", "outputsize": 1500,
+                "timezone": "UTC", "apikey": TD_KEY},
+        timeout=20,
+    )
+    j = r.json()
+    if "values" not in j:
+        raise RuntimeError(str(j.get("message", j))[:200])
+    df = pd.DataFrame(j["values"])
+    df["datetime"] = pd.to_datetime(df["datetime"])
+    for c in ["open", "high", "low", "close"]:
+        df[c] = df[c].astype(float)
+    return df[["datetime", "open", "high", "low", "close"]].set_index("datetime").sort_index()
 
 
 def from_kraken():
@@ -34,33 +51,13 @@ def from_kraken():
     return df[["datetime", "open", "high", "low", "close"]].set_index("datetime").sort_index()
 
 
-def from_yahoo():
-    last = None
-    for host in ("query1", "query2"):
-        try:
-            r = requests.get(
-                f"https://{host}.finance.yahoo.com/v8/finance/chart/GC=F",
-                params={"interval": "5m", "range": "5d"},
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=20,
-            )
-            r.raise_for_status()
-            res = r.json()["chart"]["result"][0]
-            q = res["indicators"]["quote"][0]
-            df = pd.DataFrame({
-                "datetime": pd.to_datetime(res["timestamp"], unit="s"),
-                "open": q["open"], "high": q["high"],
-                "low": q["low"], "close": q["close"],
-            })
-            return df.dropna().set_index("datetime").sort_index()
-        except Exception as e:
-            last = e
-    raise RuntimeError(str(last))
-
-
 def get_m5():
+    sources = []
+    if TD_KEY:
+        sources.append(("Twelve XAU/USD", from_twelve))
+    sources.append(("Kraken PAXG", from_kraken))
     errs = []
-    for name, fn in (("Kraken PAXG", from_kraken), ("Yahoo GC=F", from_yahoo)):
+    for name, fn in sources:
         try:
             df = fn()
             break
@@ -68,11 +65,10 @@ def get_m5():
             errs.append(f"{name}: {e}")
     else:
         raise RuntimeError(" | ".join(errs))
-    df[["open", "high", "low", "close"]] += OFFSET
     now = pd.Timestamp.now(tz="UTC").tz_localize(None)
     if df.index[-1] + pd.Timedelta(minutes=5) > now:
         df = df.iloc[:-1]
-    return df, now, name
+    return df, now, name, errs
 
 
 def get_bias(df):
@@ -150,14 +146,17 @@ def main():
     if manual:
         send("Bot işləyir. Siqnal yalnız şərt uyğun gələndə gələcək.")
 
-    df, now, src = get_m5()
+    df, now, src, errs = get_m5()
     t = df.index[-1]
     closed_ago = (now - (t + pd.Timedelta(minutes=5))).total_seconds() / 60
     print(f"Son sam: {t}, baglanib: {closed_ago:.1f} deq evvel, menbe: {src}")
 
     if manual:
-        send(f"Mənbə: {src}\nSon şam: {t} UTC\nSon qiymət: {df.iloc[-1].close:.2f}\n"
-             f"Bunu brokerindəki qiymətlə müqayisə et və mənə yaz.")
+        txt = (f"Mənbə: {src}\nSon şam: {t} UTC\nSon qiymət: {df.iloc[-1].close:.2f}\n"
+               f"Bunu brokerindəki qiymətlə müqayisə et.")
+        if errs:
+            txt += "\nXəbərdarlıq: " + " | ".join(errs)[:300]
+        send(txt)
 
     if weekend(t):
         print("Bazar bagli, kecildi.")
@@ -187,9 +186,10 @@ def main():
         f"SL: {entry - d * SL:.2f}\n"
         f"TP1: {entry + d * TP1:.2f} (yarısını bağla, SL-i girişə çək)\n"
         f"TP2: {entry + d * TP2:.2f}\n"
-        f"Qiymət brokerdən fərqli ola bilər, SL/TP-ni brokerin qiymətinə görə hesabla.\n"
-        f"Maliyyə məsləhəti deyil."
     )
+    if not src.startswith("Twelve"):
+        msg += "DİQQƏT: qiymət mənbəyi spot qızıl deyil, ~17$ fərq var. Yalnız məsafələri işlət.\n"
+    msg += "Qiymət brokerdən fərqli ola bilər, SL/TP-ni brokerin qiymətinə görə hesabla.\nMaliyyə məsləhəti deyil."
     send(msg)
     print(msg)
 
