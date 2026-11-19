@@ -14,13 +14,22 @@ NO_TRADE_UTC = []
 
 
 def get_m5():
-    r = requests.get(
-        "https://query1.finance.yahoo.com/v8/finance/chart/XAUUSD=X",
-        params={"interval": "5m", "range": "5d"},
-        headers={"User-Agent": "Mozilla/5.0"},
-        timeout=20,
-    ).json()
-    res = r["chart"]["result"][0]
+    last_err = None
+    for host in ("query1", "query2"):
+        try:
+            r = requests.get(
+                f"https://{host}.finance.yahoo.com/v8/finance/chart/XAUUSD=X",
+                params={"interval": "5m", "range": "5d"},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=20,
+            )
+            r.raise_for_status()
+            res = r.json()["chart"]["result"][0]
+            break
+        except Exception as e:
+            last_err = e
+    else:
+        raise RuntimeError(f"Yahoo olmadi: {last_err}")
     q = res["indicators"]["quote"][0]
     df = pd.DataFrame({
         "datetime": pd.to_datetime(res["timestamp"], unit="s"),
@@ -108,6 +117,9 @@ def main():
     closed_ago = (now - (t + pd.Timedelta(minutes=5))).total_seconds() / 60
     print(f"Son sam: {t}, baglanib: {closed_ago:.1f} deq evvel")
 
+    if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
+        send(f"Qiymət məlumatı gəlir. Son şam: {t} UTC, son qiymət: {df.iloc[-1].close:.2f}")
+
     if closed_ago > FRESH_MINUTES:
         print("Sam kohnedir, kecildi.")
         return
@@ -129,15 +141,20 @@ def main():
     msg = (
         f"GOLD M5 | {side}\n"
         f"Zona: {zone:.2f}\n"
-        f"Giris: {entry:.2f}\n"
+        f"Giriş: {entry:.2f}\n"
         f"SL: {entry - d * SL:.2f}\n"
-        f"TP1: {entry + d * TP1:.2f} (yarisini bagla, SL-i girise cek)\n"
+        f"TP1: {entry + d * TP1:.2f} (yarısını bağla, SL-i girişə çək)\n"
         f"TP2: {entry + d * TP2:.2f}\n"
-        f"Riskinizi duzgun idare edin. Maliyye meslehəti deyil."
+        f"Riskinizi düzgün idarə edin. Maliyyə məsləhəti deyil."
     )
     send(msg)
     print(msg)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
+            send("XETA: " + repr(e)[:400])
+        raise
