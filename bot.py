@@ -1,6 +1,11 @@
+import io
 import os
 import requests
 import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 
 TG_TOKEN = os.environ["TG_TOKEN"]
 TG_CHAT = os.environ["TG_CHAT_ID"]
@@ -9,8 +14,10 @@ TD_KEY = os.environ.get("TD_API_KEY", "")
 SL, TP1, TP2 = 9.0, 7.0, 15.0
 TOUCH = 3.0
 CLUSTER = 4.0
-COOLDOWN_CANDLES = 6
+COOLDOWN_CANDLES = 12
 FRESH_MINUTES = 4.5
+BREAK_BUFFER = 1.0
+BREAK_LOOKBACK = 36
 NO_TRADE_UTC = []
 
 
@@ -121,15 +128,29 @@ def check(df):
     body = max(abs(c.close - c.open), 0.01)
     up = c.high - max(c.open, c.close)
     dn = min(c.open, c.close) - c.low
+    sup = cluster(pivots(df, "low"))
+    res = cluster(pivots(df, "high"))
+    recent = df.iloc[-BREAK_LOOKBACK - 1:-1]
 
-    if bias == "SELL" and c.close < c.open and up >= 0.5 * body:
-        for z in cluster(pivots(df, "high")):
-            if c.high >= z - TOUCH and c.high <= z + 6 and c.close < z:
-                return "SELL", c.close, z
-    if bias == "BUY" and c.close > c.open and dn >= 0.5 * body:
-        for z in cluster(pivots(df, "low")):
-            if c.low <= z + TOUCH and c.low >= z - 6 and c.close > z:
-                return "BUY", c.close, z
+    if bias == "SELL" and c.close < c.open:
+        for s in sup:
+            broke = ((recent["close"].shift(1) >= s) & (recent["close"] < s - BREAK_BUFFER)).any()
+            if broke and c.high >= s - TOUCH and c.high <= s + 4 and c.close < s:
+                return "SELL", c.close, s, "Dəstək sınması + retest"
+        if up >= 0.5 * body:
+            for z in res:
+                if c.high >= z - TOUCH and c.high <= z + 6 and c.close < z:
+                    return "SELL", c.close, z, "Müqavimətdən rədd olunma"
+
+    if bias == "BUY" and c.close > c.open:
+        for r in res:
+            broke = ((recent["close"].shift(1) <= r) & (recent["close"] > r + BREAK_BUFFER)).any()
+            if broke and c.low <= r + TOUCH and c.low >= r - 4 and c.close > r:
+                return "BUY", c.close, r, "Müqavimət sınması + retest"
+        if dn >= 0.5 * body:
+            for z in sup:
+                if c.low <= z + TOUCH and c.low >= z - 6 and c.close > z:
+                    return "BUY", c.close, z, "Dəstəkdən sıçrayış"
     return None
 
 
@@ -152,11 +173,66 @@ def explain(df):
     return s
 
 
+def levels_for(side, entry):
+    d = -1 if side == "SELL" else 1
+    return entry - d * SL, entry + d * TP1, entry + d * TP2
+
+
+def make_chart(df, side, entry, zone, label):
+    d = df.iloc[-90:]
+    sl, tp1, tp2 = levels_for(side, entry)
+    fig, ax = plt.subplots(figsize=(9, 5.5), dpi=110)
+    fig.patch.set_facecolor("#0d1117")
+    ax.set_facecolor("#0d1117")
+    w = 0.6
+    for i, (_, r) in enumerate(d.iterrows()):
+        col = "#26a69a" if r.close >= r.open else "#ef5350"
+        ax.plot([i, i], [r.low, r.high], color=col, lw=1)
+        ax.add_patch(Rectangle((i - w / 2, min(r.open, r.close)), w,
+                               max(abs(r.close - r.open), 0.05), color=col))
+    n = len(d)
+    lines = [
+        (zone, "#f0b90b", "--", f"Zona {zone:.2f}"),
+        (entry, "#58a6ff", "-", f"Giris {entry:.2f}"),
+        (sl, "#ff5252", "-", f"SL {sl:.2f}"),
+        (tp1, "#00e676", "-", f"TP1 {tp1:.2f}"),
+        (tp2, "#00e676", "--", f"TP2 {tp2:.2f}"),
+    ]
+    for y, col, ls, txt in lines:
+        ax.hlines(y, -1, n, colors=col, linestyles=ls, linewidth=1.2)
+        ax.text(n + 1, y, txt, color=col, va="center", fontsize=9)
+    ax.set_xlim(-1, n + 16)
+    ax.set_ylim(min(d.low.min(), sl, tp1, tp2) - 3, max(d.high.max(), sl, tp1, tp2) + 3)
+    ax.set_title(f"XAUUSD M5 | {side} | {label}", color="white", fontsize=12)
+    ax.tick_params(colors="#8b949e")
+    xt = list(range(0, n, 15))
+    ax.set_xticks(xt)
+    ax.set_xticklabels([d.index[i].strftime("%H:%M") for i in xt], color="#8b949e")
+    ax.set_xlabel("UTC", color="#8b949e")
+    for sp in ax.spines.values():
+        sp.set_color("#30363d")
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+
 def send(text):
     requests.post(
         f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
         json={"chat_id": TG_CHAT, "text": text}, timeout=20,
     )
+
+
+def send_photo(buf, caption):
+    r = requests.post(
+        f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto",
+        data={"chat_id": TG_CHAT, "caption": caption[:1000]},
+        files={"photo": ("signal.png", buf, "image/png")}, timeout=30,
+    )
+    if not r.ok:
+        raise RuntimeError("sendPhoto: " + r.text[:200])
 
 
 def main():
@@ -174,6 +250,12 @@ def main():
         if errs:
             txt += "\nXəbərdarlıq: " + " | ".join(errs)[:300]
         send(txt)
+        try:
+            p = df.iloc[-1].close
+            send_photo(make_chart(df, "SELL", p, p + 3, "TEST (siqnal deyil)"),
+                       "Test şəkil. Bu siqnal deyil, yalnız şəklin işlədiyini yoxlayır.")
+        except Exception as e:
+            send("Şəkil xətası: " + repr(e)[:300])
 
     if weekend(t):
         print("Bazar bagli, kecildi.")
@@ -198,21 +280,27 @@ def main():
         print("Siqnal yoxdur.")
         return
 
-    side, entry, zone = sig
-    d = -1 if side == "SELL" else 1
-    msg = (
-        f"GOLD M5 | {side} ({src})\n"
+    side, entry, zone, label = sig
+    sl, tp1, tp2 = levels_for(side, entry)
+    caption = (
+        f"GOLD M5 | {side}\n"
+        f"Setup: {label}\n\n"
+        f"Giriş: {entry:.2f} (indi, market)\n"
+        f"SL: {sl:.2f}\n"
+        f"TP1: {tp1:.2f} (yarısını bağla, SL-i girişə çək)\n"
+        f"TP2: {tp2:.2f}\n"
         f"Zona: {zone:.2f}\n"
-        f"Giriş: {entry:.2f}\n"
-        f"SL: {entry - d * SL:.2f}\n"
-        f"TP1: {entry + d * TP1:.2f} (yarısını bağla, SL-i girişə çək)\n"
-        f"TP2: {entry + d * TP2:.2f}\n"
+        f"Risk/mükafat: 1:{TP1 / SL:.1f} (TP1), 1:{TP2 / SL:.1f} (TP2)\n"
     )
     if not src.startswith("Twelve"):
-        msg += "DİQQƏT: qiymət mənbəyi spot qızıl deyil, ~17$ fərq var. Yalnız məsafələri işlət.\n"
-    msg += "Qiymət brokerdən fərqli ola bilər, SL/TP-ni brokerin qiymətinə görə hesabla.\nMaliyyə məsləhəti deyil."
-    send(msg)
-    print(msg)
+        caption += "DİQQƏT: mənbə spot qızıl deyil, ~17$ fərq var.\n"
+    caption += "Qiymət brokerdən fərqli ola bilər, məsafələri brokerin qiymətinə tətbiq et.\nMaliyyə məsləhəti deyil."
+    try:
+        send_photo(make_chart(df, side, entry, zone, label), caption)
+    except Exception as e:
+        print("Sekil gonderilmedi:", e)
+        send(caption)
+    print(caption)
 
 
 if __name__ == "__main__":
