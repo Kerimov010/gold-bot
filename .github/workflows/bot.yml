@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
+    inputs:
+      auto:
+        description: "auto"
+        required: false
+        default: "false"
+
+concurrency:
+  group: gold-bot
+  cancel-in-progress: false
 
 jobs:
   run:
@@ -14,8 +23,13 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install requests pandas
-      - run: python bot.py
+      - name: run bot
         env:
           TD_API_KEY: ${{ secrets.TD_API_KEY }}
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          AUTO: ${{ github.event.inputs.auto }}
+        run: |
+          if [ "$AUTO" = "true" ]; then export GITHUB_EVENT_NAME=schedule; fi
+          python bot.py
+
