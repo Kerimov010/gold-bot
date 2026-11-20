@@ -130,6 +130,45 @@ def atr15(w, period=14):
     return float(tr.rolling(period).mean().iloc[-1])
 
 
+def adx15(w, period=14):
+    b = closed_resample(w, 15)
+    if len(b) < period * 3:
+        return -1.0
+    h, l, c = b["high"].values, b["low"].values, b["close"].values
+    up = h[1:] - h[:-1]
+    dn = l[:-1] - l[1:]
+    plus = np.where((up > dn) & (up > 0), up, 0.0)
+    minus = np.where((dn > up) & (dn > 0), dn, 0.0)
+    tr = np.maximum.reduce([h[1:] - l[1:], np.abs(h[1:] - c[:-1]), np.abs(l[1:] - c[:-1])])
+
+    def wilder(x, p):
+        out = np.zeros(len(x))
+        out[p - 1] = x[:p].sum()
+        for i in range(p, len(x)):
+            out[i] = out[i - 1] - out[i - 1] / p + x[i]
+        return out[p - 1:]
+
+    a, pp, mm = wilder(tr, period), wilder(plus, period), wilder(minus, period)
+    pdi, mdi = 100 * pp / a, 100 * mm / a
+    dx = 100 * np.abs(pdi - mdi) / (pdi + mdi + 1e-12)
+    if len(dx) < period:
+        return -1.0
+    adx = dx[:period].mean()
+    for v in dx[period:]:
+        adx = (adx * (period - 1) + v) / period
+    return float(adx)
+
+
+def atr_ratio(w, period=14):
+    b = closed_resample(w, 15)
+    if len(b) < period * 3:
+        return -1.0
+    pc = b["close"].shift(1)
+    tr = pd.concat([b["high"] - b["low"], (b["high"] - pc).abs(), (b["low"] - pc).abs()], axis=1).max(axis=1)
+    atr = tr.rolling(period).mean().dropna()
+    return float(atr.iloc[-1] / atr.median())
+
+
 def features(w, side):
     want = 1 if side == "BUY" else -1
     sd, kind = structure(w)
@@ -138,6 +177,8 @@ def features(w, side):
         "struct_agree": sd == want,
         "choch_against": kind == "CHOCH" and sd == -want,
         "sweep": sweep(w, side),
+        "adx": adx15(w),
+        "atr_ratio": atr_ratio(w),
     }
 
 
@@ -215,7 +256,6 @@ def run(df, log=print):
         raw[i] = bot.check(df.iloc[i - WINDOW + 1:i + 1])
         if i % 10000 == 0:
             log(f"Analiz: {i}/{N}, {time.time() - t0:.0f}s")
-    cost = SPREAD + COMM
     rows = []
     for i in range(N - 1):
         if raw[i] is None:
@@ -225,53 +265,104 @@ def run(df, log=print):
         side, _, zone, label = raw[i]
         w = df.iloc[max(0, i - WINDOW + 1):i + 1]
         f = features(w, side)
-        pnl, out, tp1 = simulate(o, h, l, c, i, side, bot.SL, bot.TP1, bot.TP2)
-        a = atr15(w)
-        if np.isfinite(a):
-            sl_a = min(max(1.5 * a, 6.0), 15.0)
-        else:
-            sl_a = bot.SL
-        pnl_a, out_a, tp1_a = simulate(o, h, l, c, i, side, sl_a, sl_a * bot.TP1 / bot.SL, sl_a * bot.TP2 / bot.SL)
-        rows.append({"ts": idx[i], "side": side, "label": label, "pnl": pnl - cost, "out": out, "tp1": tp1,
-                     "pnl_a": pnl_a - cost, "out_a": out_a, "tp1_a": tp1_a, "sl_a": sl_a, **f})
+        gross, out, tp1 = simulate(o, h, l, c, i, side, bot.SL, bot.TP1, bot.TP2)
+        rows.append({"ts": idx[i], "side": side, "label": label, "gross": gross,
+                     "out": out, "tp1": tp1, **f})
     return rows
+
+
+COSTS = (0.3, 0.5, 0.7)
+
+VARIANTS = [
+    ("BAZA (indiki bot)", lambda r: True),
+    ("A: yalnız trend bazarı (ADX≥20)", lambda r: r["adx"] >= 20),
+    ("B: M15 struktur uyğun", lambda r: r["struct_agree"]),
+    ("C: ADX≥20 + struktur uyğun", lambda r: r["adx"] >= 20 and r["struct_agree"]),
+    ("D: normal volatillik (0.6-1.8×)", lambda r: 0.6 <= r["atr_ratio"] <= 1.8),
+    ("E: ADX≥20 + struktur + normal vol.", lambda r: r["adx"] >= 20 and r["struct_agree"] and 0.6 <= r["atr_ratio"] <= 1.8),
+    ("F: müqavimət-sınması BUY çıxarılıb (!)", lambda r: r["label"] != "Müqavimət sınması + retest"),
+]
+
+
+def pf_of(p):
+    wins, losses = p[p > 0].sum(), -p[p < 0].sum()
+    return wins / losses if losses > 0 else float("inf")
+
+
+def fmt_pf(x):
+    return "∞" if x == float("inf") else f"{x:.2f}"
+
+
+def longest_losing(p):
+    best = cur = 0
+    for v in p:
+        cur = cur + 1 if v < 0 else 0
+        best = max(best, cur)
+    return best
+
+
+def evaluate(df, rows, name, fn):
+    sel = sorted([r for r in rows if fn(r)], key=lambda r: r["ts"])
+    if len(sel) < 5:
+        return f"{name}\n  əməliyyat çox azdır (n={len(sel)})", False
+    g = np.array([r["gross"] for r in sel])
+    p3, p5, p7 = (g - c for c in COSTS)
+    cum = np.cumsum(p3)
+    dd = (np.maximum.accumulate(cum) - cum).max()
+    cut = df.index[0] + (df.index[-1] - df.index[0]) * 2 / 3
+    first = np.array([r["gross"] - COSTS[0] for r in sel if r["ts"] < cut])
+    last = np.array([r["gross"] - COSTS[0] for r in sel if r["ts"] >= cut])
+    pf_first = pf_of(first) if len(first) else 0.0
+    pf_last = pf_of(last) if len(last) else 0.0
+    months = {}
+    for r in sel:
+        k = r["ts"].strftime("%Y-%m")
+        months[k] = months.get(k, 0.0) + r["gross"] - COSTS[0]
+    pos = sum(1 for v in months.values() if v > 0)
+    ok1 = len(sel) >= 100
+    ok2 = pf_first >= 1.05 and pf_last >= 1.05
+    ok3 = pf_of(p5) >= 1.10
+    ok4 = pos / len(months) >= 0.6
+    passed = ok1 and ok2 and ok3 and ok4
+    mstr = " ".join(f"{v:+.0f}" for _, v in sorted(months.items()))
+    txt = (f"{name}\n"
+           f"  n={len(sel)} | PF {fmt_pf(pf_of(p3))} (spread 0.5: {fmt_pf(pf_of(p5))}, 0.7: {fmt_pf(pf_of(p7))})"
+           f" | Net {p3.sum():+.0f}$ | DD {dd:.0f}$\n"
+           f"  İlk 2/3 PF {fmt_pf(pf_first)}, son 1/3 PF {fmt_pf(pf_last)} | Müsbət aylar {pos}/{len(months)}"
+           f" | ən uzun zərər seriyası {longest_losing(p3)}\n"
+           f"  Aylıq $: {mstr}\n"
+           f"  Meyar (n≥100, hər iki dövrdə PF≥1.05, spread 0.5-də PF≥1.10, aylar≥60% müsbət): "
+           f"{'KEÇDİ ✅' if passed else 'KEÇMƏDİ ❌'} "
+           f"[{'✓' if ok1 else '✗'}{'✓' if ok2 else '✗'}{'✓' if ok3 else '✗'}{'✓' if ok4 else '✗'}]")
+    return txt, passed
 
 
 def report(df, rows):
     span_days = (df.index[-1] - df.index[0]).days or 1
-    msgs = []
-    head = (f"BACKTEST\nMəlumat: {df.index[0]:%Y-%m-%d} → {df.index[-1]:%Y-%m-%d} "
-            f"({span_days} gün, {len(df)} şam)\nXərc/əməliyyat: spread {SPREAD} + komissiya {COMM} qiymət dolları\n"
-            f"Giriş: siqnaldan sonrakı şamın açılışı. Eyni şamda SL+TP: SL birinci.\n"
-            f"Net/DD: 0.01 lot-da təxmini $.\n")
-    msgs.append(head)
+    head = (f"BACKTEST v2 (rejim təhlili)\nMəlumat: {df.index[0]:%Y-%m-%d} → {df.index[-1]:%Y-%m-%d} "
+            f"({span_days} gün)\nGiriş: siqnaldan sonrakı şamın açılışı. Eyni şamda SL+TP: SL birinci.\n"
+            f"Net/DD: 0.01 lot-da təxmini $. Əməliyyatlar: {len(rows)}\n"
+            f"Meyarlar nəticələrə baxmadan əvvəl təyin olunub. (!) = nəticəyə baxandan sonra seçilib.\n")
     if not rows:
-        msgs.append("Heç bir siqnal tapılmadı.")
-        return msgs
-    rows = sorted(rows, key=lambda r: r["ts"])
-    weeks = span_days / 7
-    b = [line("BAZA (hamısı)", stats(rows)), f"Əməliyyat/həftə: {len(rows) / weeks:.1f}"]
-    cut = df.index[0] + (df.index[-1] - df.index[0]) * 2 / 3
-    b.append(line("İlk 2/3 (öyrənmə)", stats([r for r in rows if r["ts"] < cut])))
-    b.append(line("Son 1/3 (test)", stats([r for r in rows if r["ts"] >= cut])))
-    for sd in ("SELL", "BUY"):
-        b.append(line(sd, stats([r for r in rows if r["side"] == sd])))
-    for lb in sorted(set(r["label"] for r in rows)):
-        b.append(line(lb, stats([r for r in rows if r["label"] == lb])))
-    msgs.append("\n".join(b))
-    f = ["FİLTR TƏHLİLİ (baza əməliyyatları üzrə, filtr tətbiq edilmir)"]
-    for key, nm in (("h1_agree", "H1 trend uyğun"), ("struct_agree", "M15 struktur uyğun"), ("sweep", "Likvidlik süpürülməsi var")):
-        f.append(line(f"{nm}: BƏLİ", stats([r for r in rows if r[key]])))
-        f.append(line(f"{nm}: XEYR", stats([r for r in rows if not r[key]])))
-    f.append(line("CHOCH əks istiqamətdə", stats([r for r in rows if r["choch_against"]])))
-    msgs.append("\n".join(f))
-    a = ["ATR SL (1.5×ATR M15, 6-15$ arası; TP eyni nisbətdə)",
-         line("ATR variantı", stats(rows, "pnl_a", "out_a", "tp1_a")),
-         line("Sabit 9/7/15  ", stats(rows)),
-         f"Orta ATR-SL: {np.mean([r['sl_a'] for r in rows]):.1f}$"]
-    msgs.append("\n".join(a))
-    msgs.append("DİQQƏT: keçmiş nəticə gələcəyi zəmanət etmir. Nümunə kiçikdirsə (n<30), nəticəyə güvənmə. "
-                "Filtr təhlili göstərir ki, filtr kömək edə bilər, onu canlı botda tətbiq etməzdən əvvəl ayrıca yoxlanmalıdır.")
+        return [head + "Heç bir siqnal tapılmadı."]
+    blocks, passed_names = [], []
+    for name, fn in VARIANTS:
+        txt, ok = evaluate(df, rows, name, fn)
+        blocks.append(txt)
+        if ok:
+            passed_names.append(name)
+    msgs, cur = [head], ""
+    for b in blocks:
+        if len(cur) + len(b) > 3300:
+            msgs.append(cur)
+            cur = ""
+        cur += b + "\n\n"
+    msgs.append(cur)
+    final = ("YEKUN: " + ("meyarı keçən variant(lar): " + "; ".join(passed_names) if passed_names
+             else "heç bir variant bütün meyarları keçmədi.") +
+             "\n7 variant sınandığı üçün təsadüfən keçmə ehtimalı var, buna görə keçən variantı canlı bota qoymazdan "
+             "əvvəl yeni məlumatda (növbəti aylarda) təkrar yoxlamaq lazımdır.")
+    msgs.append(final)
     return msgs
 
 
