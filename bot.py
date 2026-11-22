@@ -192,7 +192,9 @@ def status_text(df, src):
     bias = get_bias(df)
     p, above, below = nearby(df)
     icon = {"SELL": "📉", "BUY": "📈"}.get(bias, "➖")
-        m15c = df["close"].resample("15min").last().dropna()
+            m15c = df["close"].resample("15min").last().dropna()
+    s = f"{icon} Bias (M15): {bias} | H1: {bias_closed(df, 60)}\nQiymət: {p:.2f} (şam {df.index[-1]:%d.%m %H:%M} UTC)\nM15 EMA20: {m15c.ewm(span=20).mean().iloc[-1]:.2f} | EMA50: {m15c.ewm(span=50).mean().iloc[-1]:.2f}\n\n"
+
     s = f"{icon} Bias (M15): {bias} | H1: {bias_closed(df, 60)}\nQiymət: {p:.2f} (şam {df.index[-1]:%d.%m %H:%M} UTC)\nM15 EMA20: {m15c.ewm(span=20).mean().iloc[-1]:.2f} | EMA50: {m15c.ewm(span=50).mean().iloc[-1]:.2f}\n\n"
 
 
