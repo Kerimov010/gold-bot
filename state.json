@@ -6,16 +6,10 @@
  "last_weekly": "",
  "last_status": "2026-11-22 23:25:00",
  "bias": {
-  "M15": "SELL",
+  "M15": "BUY",
   "H1": "SELL"
  },
- "bias_pend": {
-  "M15": [
-   "BUY",
-   5,
-   "2026-11-22 23:45:00"
-  ]
- },
+ "bias_pend": {},
  "news_notified": [],
  "last_news_warn": ""
 }
