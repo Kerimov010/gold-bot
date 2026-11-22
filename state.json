@@ -5,7 +5,10 @@
  "last_daily": "",
  "last_weekly": "",
  "last_status": "",
- "bias": {},
+ "bias": {
+  "M15": "SELL",
+  "H1": "SELL"
+ },
  "bias_pend": {},
  "news_notified": [],
  "last_news_warn": ""
