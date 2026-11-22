@@ -192,7 +192,8 @@ def status_text(df, src):
     bias = get_bias(df)
     p, above, below = nearby(df)
     icon = {"SELL": "📉", "BUY": "📈"}.get(bias, "➖")
-    s = f"{icon} Bias: {bias}\nQiymət: {p:.2f}\n\n"
+        s = f"{icon} Bias (M15): {bias} | H1: {bias_closed(df, 60)}\nQiymət: {p:.2f}\n\n"
+
     s += "🔴 Müqavimət zonaları:\n"
     s += "\n".join(f"• {z:.2f} (+{z - p:.1f})" for z in above) if above else "• yoxdur"
     s += "\n\n🟢 Dəstək zonaları:\n"
