@@ -1,6 +1,15 @@
 {
- "next_id": 5,
- "open": [],
+ "next_id": 6,
+ "open": [
+  {
+   "id": 5,
+   "ts": "2026-11-23 11:20:00",
+   "side": "BUY",
+   "label": "Dəstəkdən sıçrayış",
+   "zone": 3620.95811,
+   "tp1_notified": false
+  }
+ ],
  "closed": [
   {
    "id": 1,
