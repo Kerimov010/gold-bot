@@ -144,7 +144,10 @@ def weekend(ts):
 
 
 def check(df):
-    bias = get_bias(df)
+    bias = bias_closed(df, 15)
+    h1_bias = bias_closed(df, 60)
+    if bias not in ("BUY", "SELL") or h1_bias != bias:
+        return None
     c = df.iloc[-1]
     body = max(abs(c.close - c.open), 0.01)
     up = c.high - max(c.open, c.close)
