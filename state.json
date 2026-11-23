@@ -1,15 +1,6 @@
 {
  "next_id": 5,
- "open": [
-  {
-   "id": 4,
-   "ts": "2026-11-23 06:55:00",
-   "side": "BUY",
-   "label": "Dəstəkdən sıçrayış",
-   "zone": 3620.95811,
-   "tp1_notified": true
-  }
- ],
+ "open": [],
  "closed": [
   {
    "id": 1,
@@ -40,11 +31,21 @@
    "tp1": false,
    "gross": -9.0,
    "closed_at": "2026-11-23"
+  },
+  {
+   "id": 4,
+   "ts": "2026-11-23 06:55:00",
+   "side": "BUY",
+   "label": "Dəstəkdən sıçrayış",
+   "outcome": "BE",
+   "tp1": true,
+   "gross": 3.5,
+   "closed_at": "2026-11-23"
   }
  ],
  "last_daily": "",
  "last_weekly": "",
- "last_status": "2026-11-23 07:25:00",
+ "last_status": "2026-11-23 07:55:00",
  "bias": {
   "M15": "BUY",
   "H1": "BUY"
