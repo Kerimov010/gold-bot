@@ -1,6 +1,15 @@
 {
- "next_id": 2,
- "open": [],
+ "next_id": 3,
+ "open": [
+  {
+   "id": 2,
+   "ts": "2026-11-23 02:20:00",
+   "side": "BUY",
+   "label": "Müqavimət sınması + retest",
+   "zone": 3585.707465,
+   "tp1_notified": false
+  }
+ ],
  "closed": [
   {
    "id": 1,
@@ -23,8 +32,8 @@
  "bias_pend": {
   "H1": [
    "NEUTRAL",
-   5,
-   "2026-11-23 02:15:00"
+   6,
+   "2026-11-23 02:20:00"
   ]
  },
  "news_notified": [],
