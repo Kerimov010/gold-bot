@@ -24,7 +24,7 @@
  ],
  "last_daily": "",
  "last_weekly": "",
- "last_status": "2026-11-23 01:55:00",
+ "last_status": "2026-11-23 02:25:00",
  "bias": {
   "M15": "BUY",
   "H1": "SELL"
@@ -32,8 +32,8 @@
  "bias_pend": {
   "H1": [
    "NEUTRAL",
-   6,
-   "2026-11-23 02:20:00"
+   7,
+   "2026-11-23 02:25:00"
   ]
  },
  "news_notified": [],
