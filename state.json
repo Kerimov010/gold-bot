@@ -1,16 +1,18 @@
 {
  "next_id": 2,
- "open": [
+ "open": [],
+ "closed": [
   {
    "id": 1,
    "ts": "2026-11-23 01:10:00",
    "side": "BUY",
    "label": "Müqavimət sınması + retest",
-   "zone": 3595.50819,
-   "tp1_notified": false
+   "outcome": "TP2",
+   "tp1": true,
+   "gross": 11.0,
+   "closed_at": "2026-11-23"
   }
  ],
- "closed": [],
  "last_daily": "",
  "last_weekly": "",
  "last_status": "2026-11-23 00:55:00",
