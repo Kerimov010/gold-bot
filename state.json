@@ -60,7 +60,13 @@
   "M15": "NEUTRAL",
   "H1": "BUY"
  },
- "bias_pend": {},
+ "bias_pend": {
+  "M15": [
+   "BUY",
+   1,
+   "2026-11-24 00:40:00"
+  ]
+ },
  "news_notified": [],
  "last_news_warn": ""
 }
