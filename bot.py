@@ -143,38 +143,69 @@ def weekend(ts):
     return wd == 5 or (wd == 4 and ts.hour >= 21) or (wd == 6 and ts.hour < 22)
 
 
+
 def check(df):
     bias = bias_closed(df, 15)
-    h1_bias = bias_closed(df, 60)
-    if bias not in ("BUY", "SELL") or h1_bias != bias:
+
+    if bias not in ("BUY", "SELL"):
         return None
+
+    last3 = df.iloc[-3:]
+
+    if len(last3) < 3:
+        return None
+
+    # M5 istiqamət təsdiqi
+    if bias == "BUY" and not (last3["close"] > last3["open"]).all():
+        return None
+
+    if bias == "SELL" and not (last3["close"] < last3["open"]).all():
+        return None
+
     c = df.iloc[-1]
+
     body = max(abs(c.close - c.open), 0.01)
     up = c.high - max(c.open, c.close)
     dn = min(c.open, c.close) - c.low
+
     sup = cluster(pivots(df, "low"))
     res = cluster(pivots(df, "high"))
     recent = df.iloc[-BREAK_LOOKBACK - 1:-1]
 
-    if bias == "SELL" and c.close < c.open:
+    # SELL: dəstək qırılması və retest
+    # və ya müqavimətdən təsdiqli rədd
+    if bias == "SELL":
         for s in sup:
-            broke = ((recent["close"].shift(1) >= s) & (recent["close"] < s - BREAK_BUFFER)).any()
+            broke = (
+                (recent["close"].shift(1) >= s)
+                & (recent["close"] < s - BREAK_BUFFER)
+            ).any()
+
             if broke and c.high >= s - TOUCH and c.high <= s + 4 and c.close < s:
                 return "SELL", c.close, s, "Dəstək sınması + retest"
+
         if up >= 0.5 * body:
             for z in res:
                 if c.high >= z - TOUCH and c.high <= z + 6 and c.close < z:
                     return "SELL", c.close, z, "Müqavimətdən rədd olunma"
 
-    if bias == "BUY" and c.close > c.open:
+    # BUY: müqavimət qırılması və retest
+    # və ya dəstəkdən təsdiqli sıçrayış
+    if bias == "BUY":
         for r in res:
-            broke = ((recent["close"].shift(1) <= r) & (recent["close"] > r + BREAK_BUFFER)).any()
+            broke = (
+                (recent["close"].shift(1) <= r)
+                & (recent["close"] > r + BREAK_BUFFER)
+            ).any()
+
             if broke and c.low <= r + TOUCH and c.low >= r - 4 and c.close > r:
                 return "BUY", c.close, r, "Müqavimət sınması + retest"
+
         if dn >= 0.5 * body:
             for z in sup:
                 if c.low <= z + TOUCH and c.low >= z - 6 and c.close > z:
                     return "BUY", c.close, z, "Dəstəkdən sıçrayış"
+
     return None
 
 
