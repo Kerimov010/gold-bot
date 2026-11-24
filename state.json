@@ -1,15 +1,6 @@
 {
  "next_id": 8,
- "open": [
-  {
-   "id": 7,
-   "ts": "2026-11-24 12:10:00",
-   "side": "SELL",
-   "label": "Dəstək sınması + retest",
-   "zone": 3624.61037,
-   "tp1_notified": false
-  }
- ],
+ "open": [],
  "closed": [
   {
    "id": 1,
@@ -66,6 +57,16 @@
    "ts": "2026-11-24 02:55:00",
    "side": "BUY",
    "label": "Müqavimət sınması + retest",
+   "outcome": "SL",
+   "tp1": false,
+   "gross": -9.0,
+   "closed_at": "2026-11-24"
+  },
+  {
+   "id": 7,
+   "ts": "2026-11-24 12:10:00",
+   "side": "SELL",
+   "label": "Dəstək sınması + retest",
    "outcome": "SL",
    "tp1": false,
    "gross": -9.0,
