@@ -1,16 +1,6 @@
 {
  "next_id": 11,
- "open": [
-  {
-   "id": 10,
-   "ts": "2026-11-24 19:40:00",
-   "side": "SELL",
-   "label": "Qırılma + retest + M5 təsdiqi",
-   "zone": 3560.74633,
-   "entry": 3558.21235,
-   "tp1_notified": true
-  }
- ],
+ "open": [],
  "closed": [
   {
    "id": 1,
@@ -100,6 +90,16 @@
    "outcome": "SL",
    "tp1": false,
    "gross": -9.0,
+   "closed_at": "2026-11-24"
+  },
+  {
+   "id": 10,
+   "ts": "2026-11-24 19:40:00",
+   "side": "SELL",
+   "label": "Qırılma + retest + M5 təsdiqi",
+   "outcome": "BE",
+   "tp1": true,
+   "gross": 3.5,
    "closed_at": "2026-11-24"
   }
  ],
