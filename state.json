@@ -1,6 +1,15 @@
 {
- "next_id": 7,
- "open": [],
+ "next_id": 8,
+ "open": [
+  {
+   "id": 7,
+   "ts": "2026-11-24 12:10:00",
+   "side": "SELL",
+   "label": "Dəstək sınması + retest",
+   "zone": 3624.61037,
+   "tp1_notified": false
+  }
+ ],
  "closed": [
   {
    "id": 1,
