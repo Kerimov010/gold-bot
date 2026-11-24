@@ -79,25 +79,25 @@ def from_kraken():
     return df[["datetime", "open", "high", "low", "close"]].set_index("datetime").sort_index()
 
 
+
 def get_m5():
-    sources = []
-    if TD_KEY:
-        sources.append(("Twelve XAU/USD", from_twelve))
-    sources.append(("Kraken PAXG", from_kraken))
-    errs = []
-    for name, fn in sources:
-        try:
-            df = fn()
-            break
-        except Exception as e:
-            errs.append(f"{name}: {e}")
-    else:
-        raise RuntimeError(" | ".join(errs))
+    if not TD_KEY:
+        raise RuntimeError("TD_API_KEY yoxdur")
+
+    df = from_twelve()
+
+    if df.empty:
+        raise RuntimeError("XAU/USD məlumatı boşdur")
+
     now = pd.Timestamp.now(tz="UTC").tz_localize(None)
+
     if df.index[-1] + pd.Timedelta(minutes=5) > now:
         df = df.iloc[:-1]
-    return df, now, name, errs
 
+    if df.empty:
+        raise RuntimeError("Bağlanmış M5 şamı yoxdur")
+
+    return df, now, "Twelve XAU/USD", []
 
 def get_bias(df):
     m15 = df["close"].resample("15min").last().dropna()
