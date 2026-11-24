@@ -57,16 +57,10 @@
  "last_weekly": "",
  "last_status": "2026-11-23 23:55:00",
  "bias": {
-  "M15": "BUY",
+  "M15": "NEUTRAL",
   "H1": "BUY"
  },
- "bias_pend": {
-  "M15": [
-   "NEUTRAL",
-   5,
-   "2026-11-24 00:00:00"
-  ]
- },
+ "bias_pend": {},
  "news_notified": [],
  "last_news_warn": ""
 }
