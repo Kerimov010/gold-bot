@@ -1,4 +1,3 @@
-
 import io
 import json
 import os
@@ -21,7 +20,10 @@ COOLDOWN_CANDLES = 12
 FRESH_MINUTES = 4.5
 BREAK_BUFFER = 1.0
 BREAK_LOOKBACK = 36
-NO_TRADE_UTC = []
+MAX_PRICE_DRIFT = 1.5  # YENİ: canlı qiymət girişdən bu qədər uzaqlaşıbsa siqnal göndərilmir
+
+# YENİ: Asiya seansı bağlıdır (gecə yarısını keçən aralıq iki hissəyə bölünüb)
+NO_TRADE_UTC = ["22:00-23:59", "00:00-06:59"]
 
 NEWS_EVENTS = [
     ("2026-12-04 13:30", "NFP"),
@@ -90,6 +92,19 @@ def get_m5():
         raise RuntimeError("Bağlanmış M5 şamı yoxdur")
 
     return df, now, "Twelve Data XAU/USD"
+
+
+# YENİ: canlı qiymət (https://twelvedata.com/docs/api, /price endpoint)
+def live_price():
+    r = requests.get(
+        "https://api.twelvedata.com/price",
+        params={"symbol": "XAU/USD", "apikey": TD_KEY},
+        timeout=10,
+    )
+    j = r.json()
+    if "price" not in j:
+        raise RuntimeError(str(j.get("message", j))[:200])
+    return float(j["price"])
 
 
 def closed_bars(df, minutes):
@@ -645,7 +660,7 @@ def _run(state):
         return
 
     if in_blackout(t):
-        print("Xəbər saatıdır.")
+        print("Qeyri-işlək seans (Asiya).")
         return
 
     for k in range(1, COOLDOWN_CANDLES + 1):
@@ -668,6 +683,19 @@ def _run(state):
 
     side, entry, zone, label = sig
 
+    # YENİ: canlı qiymət yoxlaması
+    try:
+        live = live_price()
+    except Exception as e:
+        print("Canlı qiymət alınmadı:", e)
+        return
+
+    if abs(live - entry) > MAX_PRICE_DRIFT:
+        print(f"Qiymət qaçıb: {live:.2f} vs {entry:.2f}")
+        return
+
+    entry = live
+
     sl, tp1, tp2 = levels_for(side, entry)
     sid = state["next_id"]
 
@@ -683,6 +711,8 @@ def _run(state):
         f"1:{TP2 / SL:.1f} (TP2)\n"
         f"Qiymət mənbəyi: {src}\n"
         f"Broker qiyməti fərqlənə bilər.\n"
+        f"Yalnız qiymət {entry - MAX_PRICE_DRIFT:.2f}-"
+        f"{entry + MAX_PRICE_DRIFT:.2f} aralığındadırsa gir.\n"
         f"Maliyyə məsləhəti deyil."
     )
 
@@ -740,4 +770,3 @@ if __name__ == "__main__":
                 pass
 
         raise
-        
