@@ -672,7 +672,7 @@ def _run(state):
             print("Cooldown, kecildi.")
             return
 
-        sig = None  # siqnallar söndürülüb (yenidən açmaq üçün: sig = check(df))
+    sig = check(df)  # siqnallar söndürülüb (yenidən açmaq üçün: sig = check(df))
 
     if not sig:
         print("Siqnal yoxdur.")
