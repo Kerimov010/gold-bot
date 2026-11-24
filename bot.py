@@ -725,6 +725,8 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+        if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
+            send("TEST — BOT ISLEYIR — REAL SIQNAL DEYIL")
     except Exception as e:
         manual = (
             os.environ.get("GITHUB_EVENT_NAME")
@@ -738,3 +740,4 @@ if __name__ == "__main__":
                 pass
 
         raise
+        
