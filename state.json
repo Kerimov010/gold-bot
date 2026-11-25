@@ -1,6 +1,16 @@
 {
- "next_id": 12,
- "open": [],
+ "next_id": 13,
+ "open": [
+  {
+   "id": 12,
+   "ts": "2026-11-25 11:35:00",
+   "side": "SELL",
+   "label": "Qırılma + retest + M5 təsdiqi",
+   "zone": 3521.75025,
+   "entry": 3513.3331,
+   "tp1_notified": false
+  }
+ ],
  "closed": [
   {
    "id": 1,
