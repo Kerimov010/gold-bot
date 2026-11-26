@@ -628,6 +628,7 @@ def process_open(df, state):
             "label": s["label"],
             "outcome": out,
             "tp1": bool(tp1),
+            "vol": bool(s.get("vol", False)),
             "gross": float(pnl),
             "closed_at": today,
         })
@@ -736,6 +737,7 @@ def _run(state):
         "zone": float(zone),
         "entry": float(entry),
         "tp1_notified": False,
+        "vol": atr_ratio(df) > 2.0,
     })
 
     state["next_id"] = sid + 1
