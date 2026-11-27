@@ -181,11 +181,38 @@ def cluster(levels):
     return out
 
 
+# YENİ: trend davamı (EMA20-yə geri çəkilmə) - yalnız BUY, ayrı etiketlə
+def pullback_buy(df):
+    if bias_closed(df, 60) != "BUY":
+        return None
+
+    ema = df["close"].ewm(span=20).mean()
+    e = float(ema.iloc[-1])
+    c = df.iloc[-1]
+    prev = df.iloc[-2]
+
+    if (
+        prev.close < prev.open
+        and c.low <= e + 0.5
+        and c.close > e
+        and c.close - e < 3.0
+        and c.close > c.open
+    ):
+        return ("BUY", c.close, e, "EMA pullback BUY")
+
+    return None
+
+
 def check(df):
     bias = bias_closed(df, 15)
 
     if bias not in ("BUY", "SELL") or len(df) < 5:
         return None
+
+    if bias == "BUY":
+        pb = pullback_buy(df)
+        if pb:
+            return pb
 
     last3 = df.iloc[-3:]
     c = df.iloc[-1]
