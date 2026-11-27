@@ -1,17 +1,6 @@
 {
  "next_id": 16,
- "open": [
-  {
-   "id": 15,
-   "ts": "2026-11-27 14:50:00",
-   "side": "BUY",
-   "label": "EMA pullback BUY",
-   "zone": 3643.0044863571616,
-   "entry": 3642.19114,
-   "tp1_notified": false,
-   "vol": false
-  }
- ],
+ "open": [],
  "closed": [
   {
    "id": 1,
@@ -152,6 +141,17 @@
    "tp1": false,
    "gross": -9.0,
    "closed_at": "2026-11-26"
+  },
+  {
+   "id": 15,
+   "ts": "2026-11-27 14:50:00",
+   "side": "BUY",
+   "label": "EMA pullback BUY",
+   "outcome": "SL",
+   "tp1": false,
+   "vol": false,
+   "gross": -9.0,
+   "closed_at": "2026-11-27"
   }
  ],
  "last_daily": "2026-11-23",
