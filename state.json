@@ -1,6 +1,17 @@
 {
- "next_id": 15,
- "open": [],
+ "next_id": 16,
+ "open": [
+  {
+   "id": 15,
+   "ts": "2026-11-27 14:50:00",
+   "side": "BUY",
+   "label": "EMA pullback BUY",
+   "zone": 3643.0044863571616,
+   "entry": 3642.19114,
+   "tp1_notified": false,
+   "vol": false
+  }
+ ],
  "closed": [
   {
    "id": 1,
