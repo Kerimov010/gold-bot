@@ -939,17 +939,29 @@ def make_report(ana, t):
     return txt
 
 
-def maybe_report(state, t, ana):
+def maybe_report(state, t, ana, df=None):
     lr = state.get("last_report")
 
     if lr and (t - pd.Timestamp(lr)) < pd.Timedelta(minutes=REPORT_EVERY_MIN):
         return
 
-    send(make_report(ana, t))
+    text = make_report(ana, t)
+
+    try:
+        if df is None:
+            raise ValueError("df yoxdur")
+        send_photo(make_chart_pro(df, ana, title="BAZAR ANALİZİ"), text)
+    except Exception as e:
+        print("Hesabat şəkli göndərilmədi:", e)
+        send(text)
+
     state["last_report"] = str(t)
 
 
-# ---------------- YENİ: İKİ MƏRHƏLƏLİ PLAN ----------------
+# ---------------- YENİ: VAHİD SİSTEM (plan + setup + təsdiq) ----------------
+CONFIRM_WAIT_CANDLES = 6   # toxunuşdan sonra təsdiq şamını gözləmə (30 dəq)
+
+
 def sell_ok(df):
     if not BUY_TREND_M5:
         return True
@@ -971,6 +983,33 @@ def sell_ok(df):
     return True
 
 
+def entry_gates(df, ana, side, entry):
+    # bütün giriş mənbələri (plan və köhnə setup) eyni qapılardan keçir
+    if side == "BUY":
+        if ana["score"] < PLAN_MIN_SCORE:
+            return False, "ümumi istiqamət BUY deyil"
+        if not buy_ok(df):
+            return False, "M5 trend və ya sərt düşüş filtri"
+        r = next((l for l in ana["res"] if l["weight"] >= 3 and l["price"] > entry), None)
+        if r and r["price"] - entry < TP1 + 1.0:
+            return False, "yaxında güclü müqavimət " + format(r["price"], ".1f")
+    else:
+        if ana["score"] > -PLAN_MIN_SCORE:
+            return False, "ümumi istiqamət SELL deyil"
+        if not sell_ok(df):
+            return False, "M5 trend və ya sərt qalxış filtri"
+        sp = next((l for l in ana["sup"] if l["weight"] >= 3 and l["price"] < entry), None)
+        if sp and entry - sp["price"] < TP1 + 1.0:
+            return False, "yaxında güclü dəstək " + format(sp["price"], ".1f")
+
+    return True, ""
+
+
+def in_cooldown(state, t):
+    le = state.get("last_entry_ts")
+    return bool(le) and (t - pd.Timestamp(le)) < pd.Timedelta(minutes=PLAN_COOLDOWN_MIN)
+
+
 def make_plan(df, ana):
     close = df["close"]
     e20 = float(close.ewm(span=20).mean().iloc[-1])
@@ -980,31 +1019,186 @@ def make_plan(df, ana):
     b15 = bias_closed(df, 15)
     b60 = bias_closed(df, 60)
 
-    if b15 == "BUY" and b60 == "BUY" and buy_ok(df):
-        if PLAN_MIN_GAP <= c - e20 <= PLAN_MAX_DIST and ana["score"] >= PLAN_MIN_SCORE:
-            r = next((l for l in ana["res"] if l["weight"] >= 3 and l["price"] > e20), None)
-            if r is None or r["price"] - e20 >= TP1 + 1.0:
-                return {
-                    "side": "BUY",
-                    "entry": round(e20, 2),
-                    "inval": round(e50 - 1.0, 2),
-                }
+    for side in ("BUY", "SELL"):
+        if b15 != side or b60 != side:
+            continue
 
-    if b15 == "SELL" and b60 == "SELL" and sell_ok(df):
-        if PLAN_MIN_GAP <= e20 - c <= PLAN_MAX_DIST and ana["score"] <= -PLAN_MIN_SCORE:
-            sp = next((l for l in ana["sup"] if l["weight"] >= 3 and l["price"] < e20), None)
-            if sp is None or e20 - sp["price"] >= TP1 + 1.0:
-                return {
-                    "side": "SELL",
-                    "entry": round(e20, 2),
-                    "inval": round(e50 + 1.0, 2),
-                }
+        gap = c - e20 if side == "BUY" else e20 - c
+        if not (PLAN_MIN_GAP <= gap <= PLAN_MAX_DIST):
+            continue
+
+        ok, _ = entry_gates(df, ana, side, e20)
+        if not ok:
+            continue
+
+        inval = e50 - 1.0 if side == "BUY" else e50 + 1.0
+        return {"side": side, "entry": round(e20, 2), "inval": round(inval, 2)}
 
     return None
 
 
+def make_chart_pro(df, ana, side=None, entry=None, zone=None, title="", count=120):
+    d = df.iloc[-count:]
+    n = len(d)
+    allc = df["close"]
+    e20 = allc.ewm(span=20).mean().iloc[-count:].values
+    e50 = allc.ewm(span=50).mean().iloc[-count:].values
+    bg = "#0d1117"
+
+    fig, ax = plt.subplots(figsize=(10, 6.5), dpi=120)
+    fig.patch.set_facecolor(bg)
+    ax.set_facecolor(bg)
+
+    for i, (_, r) in enumerate(d.iterrows()):
+        col = "#26a69a" if r.close >= r.open else "#ef5350"
+        ax.plot([i, i], [r.low, r.high], color=col, lw=1)
+        ax.add_patch(
+            Rectangle(
+                (i - 0.3, min(r.open, r.close)),
+                0.6,
+                max(abs(r.close - r.open), 0.05),
+                color=col,
+            )
+        )
+
+    ax.plot(range(n), e20, color="#58a6ff", lw=1.3, label="EMA20")
+    ax.plot(range(n), e50, color="#f0883e", lw=1.3, label="EMA50")
+
+    ys = [float(d.low.min()), float(d.high.max())]
+    trade = None
+
+    if side and entry is not None:
+        trade = levels_for(side, entry)
+        ys += [trade[0], trade[2], entry]
+
+    lo, hi = min(ys) - 4, max(ys) + 4
+    lbl = dict(facecolor=bg, edgecolor="none", pad=1.0, alpha=0.75)
+
+    for l in ana["res"][:5]:
+        if lo <= l["price"] <= hi:
+            ax.hlines(l["price"], 0, n - 1, colors="#ff7b72", linestyles="--",
+                      linewidth=0.7 + 0.2 * min(l["weight"], 8), alpha=0.85)
+            ax.text(0.5, l["price"], "R " + format(l["price"], ".1f") + " ×" + str(l["weight"]),
+                    color="#ff7b72", va="bottom", fontsize=7.5, bbox=lbl)
+
+    for l in ana["sup"][:5]:
+        if lo <= l["price"] <= hi:
+            ax.hlines(l["price"], 0, n - 1, colors="#3fb950", linestyles="--",
+                      linewidth=0.7 + 0.2 * min(l["weight"], 8), alpha=0.85)
+            ax.text(0.5, l["price"], "S " + format(l["price"], ".1f") + " ×" + str(l["weight"]),
+                    color="#3fb950", va="top", fontsize=7.5, bbox=lbl)
+
+    for key, arrow in (("liq_above", "↑"), ("liq_below", "↓")):
+        v = ana.get(key)
+        if v and lo <= v <= hi:
+            ax.hlines(v, 0, n - 1, colors="#d2a8ff", linestyles=":", linewidth=1.3)
+            ax.text(n - 1, v, "LİK" + arrow + " " + format(v, ".1f"), color="#d2a8ff",
+                    ha="right", va="bottom", fontsize=7.5, bbox=lbl)
+
+    if zone is not None and lo <= zone <= hi:
+        ax.hlines(zone, 0, n - 1, colors="#f0b90b", linestyles="--", linewidth=1.0)
+
+    if trade:
+        sl, tp1, tp2 = trade
+        ax.fill_between([n - 30, n + 12], sl, entry, color="#ff5252", alpha=0.15)
+        ax.fill_between([n - 30, n + 12], entry, tp2, color="#00e676", alpha=0.12)
+        for y, col, ls, txt in (
+            (entry, "#58a6ff", "-", "Giriş " + format(entry, ".2f")),
+            (sl, "#ff5252", "-", "SL " + format(sl, ".2f")),
+            (tp1, "#00e676", "-", "TP1 " + format(tp1, ".2f")),
+            (tp2, "#00e676", "--", "TP2 " + format(tp2, ".2f")),
+        ):
+            ax.hlines(y, n - 30, n + 12, colors=col, linestyles=ls, linewidth=1.3)
+            ax.text(n + 13, y, txt, color=col, va="center", fontsize=8.5)
+
+    last = float(d["close"].iloc[-1])
+    ax.hlines(last, 0, n + 12, colors="#8b949e", linestyles=":", linewidth=0.8)
+    if not (trade and abs(last - entry) < 2.5):
+        ax.text(n + 13, last, format(last, ".2f"), color="white", va="center", fontsize=8,
+                bbox=dict(facecolor="#30363d", edgecolor="none", pad=1.5))
+
+    ax.set_xlim(-1, n + 22)
+    ax.set_ylim(lo, hi)
+    xt = list(range(0, n, 12))
+    ax.set_xticks(xt)
+    ax.set_xticklabels([d.index[i].strftime("%d %H:%M") for i in xt], color="#8b949e", fontsize=8)
+    ax.tick_params(colors="#8b949e")
+    ax.grid(color="#21262d", linewidth=0.5)
+
+    for sp in ax.spines.values():
+        sp.set_color("#30363d")
+
+    ax.set_title(
+        "XAUUSD M5 | " + title + " | " + d.index[-1].strftime("%d.%m %H:%M") + " UTC",
+        color="white", fontsize=11,
+    )
+    ax.text(0.01, 0.985,
+            trend_line(ana) + "   →   " + ana["direction"] + " (" + format(ana["score"], "+d") + "/" + str(ana["total"]) + ")",
+            transform=ax.transAxes, color="white", va="top", fontsize=8.5,
+            bbox=dict(facecolor="#161b22", edgecolor="#30363d", pad=3))
+    ax.legend(loc="upper left", bbox_to_anchor=(0.0, 0.925), facecolor=bg, edgecolor="#30363d", labelcolor="white", fontsize=8)
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+
+def emit_entry(df, state, ana, side, entry, zone, label, ts, confirm_text, plan_id=None):
+    sl, tp1, tp2 = levels_for(side, entry)
+    sid = state["next_id"]
+    vol = atr_ratio(df) > 2.0
+
+    src_line = "Mənbə: " + label
+    if plan_id:
+        src_line += " (plan #P" + str(plan_id) + ")"
+
+    caption = (
+        f"🚨 GİRİŞ TƏSDİQLƏNDİ | GOLD M5 | {side} | #{sid}\n"
+        f"{src_line}\n"
+        f"Təsdiq: {confirm_text}\n\n"
+        f"Giriş: {entry:.2f}\n"
+        f"SL: {sl:.2f}\n"
+        f"TP1: {tp1:.2f} (yarısını bağla, SL-i girişə çək)\n"
+        f"TP2: {tp2:.2f}\n"
+        f"Zona: {zone:.2f}\n"
+        f"Risk/mükafat: 1:{TP1 / SL:.1f} (TP1), 1:{TP2 / SL:.1f} (TP2)\n"
+        f"{ana_summary(ana)}\n"
+        f"Qiymət mənbəyi: Twelve Data XAU/USD (broker fərqlənə bilər)\n"
+        f"Yalnız qiymət {entry - MAX_PRICE_DRIFT:.2f}-{entry + MAX_PRICE_DRIFT:.2f} aralığındadırsa gir.\n"
+        f"Maliyyə məsləhəti deyil."
+    )
+
+    if vol:
+        caption += "\n⚠️ Volatillik yüksəkdir."
+
+    try:
+        send_photo(
+            make_chart_pro(df, ana, side=side, entry=entry, zone=zone, title=side + " GİRİŞ"),
+            caption,
+        )
+    except Exception as e:
+        print("Şəkil göndərilmədi:", e)
+        send(caption)
+
+    state["open"].append({
+        "id": sid,
+        "ts": str(ts),
+        "side": side,
+        "label": label,
+        "zone": float(zone),
+        "entry": float(entry),
+        "tp1_notified": False,
+        "vol": bool(vol),
+    })
+    state["next_id"] = sid + 1
+    state["last_entry_ts"] = str(ts)
+    print(caption)
+
+
 def maybe_create_plan(df, state, t, ana):
-    if state["pending"] or state["open"]:
+    if state["pending"] or state["open"] or in_cooldown(state, t):
         return
 
     lp = state.get("last_plan_ts")
@@ -1019,26 +1213,27 @@ def maybe_create_plan(df, state, t, ana):
     sl, tp1, tp2 = levels_for(side, entry)
     pid = state["next_plan"]
     c = float(df["close"].iloc[-1])
+    col = "yaşıl" if side == "BUY" else "qırmızı"
 
     text = (
         f"📋 HAZIRLIQ #P{pid} | GOLD M5 | {side}\n"
-        f"Plan: qiymət {entry:.2f} səviyyəsinə (EMA20) gələndə giriş.\n"
-        f"Hələ girmə, gözlə.\n\n"
+        f"Giriş zonası: {entry:.2f} (EMA20). Hələ girmə.\n"
+        f"Qiymət zonaya toxunub {col} şamla təsdiq verəndə ayrıca "
+        f"\"GİRİŞ TƏSDİQLƏNDİ\" göndərəcəm.\n\n"
         f"Hazırkı qiymət: {c:.2f}\n"
-        f"Giriş: {entry:.2f}\n"
-        f"SL: {sl:.2f}\n"
-        f"TP1: {tp1:.2f} (yarısını bağla, SL-i girişə çək)\n"
-        f"TP2: {tp2:.2f}\n"
-        f"Ləğv səviyyəsi: {inval:.2f} "
-        f"(M5 şam bunu keçib bağlanarsa plan ləğv olur)\n"
+        f"Təxmini giriş: {entry:.2f}\n"
+        f"SL: {sl:.2f} | TP1: {tp1:.2f} | TP2: {tp2:.2f}\n"
+        f"Ləğv: M5 şam {inval:.2f}-i keçib bağlanarsa\n"
         f"{ana_summary(ana)}\n"
         f"Plan {PLAN_EXPIRE_CANDLES * 5 // 60} saat qüvvədədir.\n"
-        f"Qiymət girişə çatanda ayrıca bildiriş göndərəcəm.\n"
         f"Maliyyə məsləhəti deyil."
     )
 
     try:
-        send_photo(make_chart(df, side, entry, entry, "HAZIRLIQ"), text)
+        send_photo(
+            make_chart_pro(df, ana, side=side, entry=entry, zone=entry, title="HAZIRLIQ " + side),
+            text,
+        )
     except Exception as e:
         print("Şəkil göndərilmədi:", e)
         send(text)
@@ -1049,13 +1244,14 @@ def maybe_create_plan(df, state, t, ana):
         "side": side,
         "entry": float(entry),
         "inval": float(inval),
+        "touch_notified": False,
     })
     state["next_plan"] = pid + 1
     state["last_plan_ts"] = str(t)
     print(f"Plan yaradıldı: {side} @ {entry:.2f}")
 
 
-def process_pending(df, state):
+def process_pending(df, state, ana):
     still = []
 
     for p in state["pending"]:
@@ -1068,99 +1264,94 @@ def process_pending(df, state):
 
         # 1) ləğv: M5 şam ləğv səviyyəsini keçib bağlanıb
         if len(after):
-            if side == "BUY":
-                broken = (after["close"] < inval).any()
-            else:
-                broken = (after["close"] > inval).any()
-
+            broken = (
+                (after["close"] < inval).any()
+                if side == "BUY"
+                else (after["close"] > inval).any()
+            )
             if broken:
                 send(f"❌ Plan {tag} ləğv oldu: trend pozuldu. Girmə.")
                 continue
 
         # 2) toxunuş
         if len(after):
-            if side == "BUY":
-                touched = after[after["low"] <= entry]
-            else:
-                touched = after[after["high"] >= entry]
+            touched = (
+                after[after["low"] <= entry]
+                if side == "BUY"
+                else after[after["high"] >= entry]
+            )
         else:
             touched = after
 
-        if len(touched):
-            tt = touched.index[0]
-            age = int((df.index > tt).sum())
-
-            if age > PLAN_ALERT_WINDOW:
-                send(
-                    f"⌛ Plan {tag}: qiymət girişə çatmışdı, amma bildiriş "
-                    f"gecikdi. Girmə."
-                )
+        if not len(touched):
+            if len(after) > PLAN_EXPIRE_CANDLES:
+                send(f"⌛ Plan {tag} vaxtı bitdi: qiymət zonaya gəlmədi.")
                 continue
-
-            b15 = bias_closed(df, 15)
-            ok = (
-                (side == "BUY" and b15 == "BUY" and buy_ok(df))
-                or (side == "SELL" and b15 == "SELL" and sell_ok(df))
-            )
-
-            if not ok:
-                send(
-                    f"⚠️ Plan {tag}: qiymət girişə çatdı, amma şərtlər "
-                    f"artıq uyğun deyil. Girmə."
-                )
-                continue
-
-            try:
-                live = live_price()
-            except Exception as e:
-                print("Canlı qiymət alınmadı:", e)
-                live = float(df["close"].iloc[-1])
-
-            sl, tp1, tp2 = levels_for(side, entry)
-            sid = state["next_id"]
-
-            msg = (
-                f"📍 QİYMƏT GİRİŞƏ ÇATDI | GOLD M5 | {side} | #{sid}\n"
-                f"(plan #P{p['pid']})\n\n"
-                f"Giriş: {entry:.2f}\n"
-                f"SL: {sl:.2f}\n"
-                f"TP1: {tp1:.2f} (yarısını bağla, SL-i girişə çək)\n"
-                f"TP2: {tp2:.2f}\n"
-                f"Hazırkı qiymət: {live:.2f}\n\n"
-                f"Trend şərtləri hələ də uyğundur. "
-                f"Uyğun görürsənsə gir, yoxsa keç.\n"
-                f"Maliyyə məsləhəti deyil."
-            )
-
-            if abs(live - entry) > 3.0:
-                msg += "\n⚠️ Qiymət giriş səviyyəsindən uzaqlaşıb."
-
-            vol = atr_ratio(df) > 2.0
-            if vol:
-                msg += "\n⚠️ Volatillik yüksəkdir."
-
-            send(msg)
-
-            state["open"].append({
-                "id": sid,
-                "ts": str(tt),
-                "side": side,
-                "label": f"PLAN {side}",
-                "zone": float(entry),
-                "entry": float(entry),
-                "tp1_notified": False,
-                "vol": bool(vol),
-            })
-            state["next_id"] = sid + 1
-            print(f"Plan işə düşdü: {tag}")
+            still.append(p)
             continue
 
-        # 3) vaxt bitib
-        if len(after) > PLAN_EXPIRE_CANDLES:
-            send(f"⌛ Plan {tag} vaxtı bitdi: qiymət girişə gəlmədi.")
+        tt = touched.index[0]
+        cands = df[df.index >= tt]
+
+        # 3) təsdiq şamı: toxunuş şamı və ya sonrakı şam giriş səviyyəsinin düzgün tərəfində bağlanmalıdır
+        if side == "BUY":
+            conf = cands[(cands["close"] > entry) & (cands["close"] > cands["open"])]
+        else:
+            conf = cands[(cands["close"] < entry) & (cands["close"] < cands["open"])]
+
+        if not len(conf):
+            if len(cands) > CONFIRM_WAIT_CANDLES:
+                send(f"⌛ Plan {tag}: toxunuşdan sonra təsdiq şamı gəlmədi. Girmə.")
+                continue
+
+            if not p.get("touch_notified"):
+                send(
+                    f"📍 Plan {tag}: qiymət giriş zonasına ({entry:.2f}) çatdı. "
+                    f"Təsdiq şamı gözlənilir, hələ girmə."
+                )
+                p["touch_notified"] = True
+
+            still.append(p)
             continue
 
-        still.append(p)
+        cc = conf.index[0]
+        age = int((df.index > cc).sum())
+
+        if age >= PLAN_ALERT_WINDOW:
+            send(f"⌛ Plan {tag}: təsdiq gəlmişdi, amma bildiriş gecikdi. Girmə.")
+            continue
+
+        if ana is None:
+            still.append(p)
+            continue
+
+        ccl = float(conf["close"].iloc[0])
+        ok, why = entry_gates(df, ana, side, ccl)
+        if ok and bias_closed(df, 15) != side:
+            ok, why = False, "M15 trend dəyişib"
+
+        if not ok:
+            send(f"⚠️ Plan {tag}: təsdiq gəldi, amma {why}. Girmə.")
+            continue
+
+        try:
+            live = live_price()
+        except Exception as e:
+            print("Canlı qiymət alınmadı:", e)
+            live = ccl
+
+        if abs(live - ccl) > MAX_PRICE_DRIFT:
+            send(f"⚠️ Plan {tag}: təsdiq gəldi, amma qiymət qaçıb ({live:.2f}). Girmə.")
+            continue
+
+        col = "yaşıl" if side == "BUY" else "qırmızı"
+        word = "yuxarı" if side == "BUY" else "aşağı"
+        confirm_text = (
+            f"toxunuş {tt.strftime('%H:%M')}, {col} şam {cc.strftime('%H:%M')} UTC "
+            f"giriş zonasından {word} bağlandı"
+        )
+
+        emit_entry(df, state, ana, side, live, entry, f"PLAN {side}", cc, confirm_text, plan_id=p["pid"])
 
     state["pending"] = still
 
@@ -1200,91 +1391,65 @@ def _run(state):
         print("Analiz xətası:", e)
         ana = None
 
-    process_pending(df, state)
+    process_pending(df, state, ana)
 
     if ana:
-        maybe_create_plan(df, state, t, ana)
-        maybe_report(state, t, ana)
+        maybe_report(state, t, ana, df)
 
-    for k in range(1, COOLDOWN_CANDLES + 1):
-        if check(df.iloc[:-k]):
-            print("Cooldown, siqnal ötürüldü.")
+    if state["open"]:
+        print("Açıq siqnal var, yeni giriş axtarılmır.")
+        return
+
+    if in_cooldown(state, t):
+        print("Son girişdən sonra gözləmə müddəti.")
+        return
+
+    if ana is None:
+        print("Analiz yoxdur, yeni giriş axtarılmır.")
+        return
+
+    cool = any(check(df.iloc[:-k]) for k in range(1, COOLDOWN_CANDLES + 1))
+    sig = None if cool else check(df)
+
+    if sig:
+        side, entry, zone, label = sig
+
+        if any(x["ts"] == str(t) for x in state["open"] + state["closed"]):
+            print("Bu siqnal artıq göndərilib.")
+            sig = None
+        elif state["pending"] and any(p["side"] != side for p in state["pending"]):
+            print("Əks istiqamətli plan var, setup keçildi.")
+            sig = None
+
+    if sig:
+        ok, why = entry_gates(df, ana, side, entry)
+        if not ok:
+            print("Setup qapıdan keçmədi:", why)
+            sig = None
+
+    if sig:
+        try:
+            live = live_price()
+        except Exception as e:
+            print("Canlı qiymət alınmadı:", e)
             return
 
-    sig = check(df)
+        if abs(live - entry) > MAX_PRICE_DRIFT:
+            print(f"Qiymət qaçıb: {live:.2f} vs {entry:.2f}")
+            return
 
-    if not sig:
-        print("Siqnal yoxdur.")
-        return
-
-    if any(
-        x["ts"] == str(t)
-        for x in state["open"] + state["closed"]
-    ):
-        print("Bu siqnal artıq göndərilib.")
-        return
-
-    side, entry, zone, label = sig
-
-    # YENİ: canlı qiymət yoxlaması
-    try:
-        live = live_price()
-    except Exception as e:
-        print("Canlı qiymət alınmadı:", e)
-        return
-
-    if abs(live - entry) > MAX_PRICE_DRIFT:
-        print(f"Qiymət qaçıb: {live:.2f} vs {entry:.2f}")
-        return
-
-    entry = live
-
-    sl, tp1, tp2 = levels_for(side, entry)
-    sid = state["next_id"]
-
-    caption = (
-        f"🚨 GOLD M5 | {side} | #{sid}\n"
-        f"Setup: {label}\n\n"
-        f"Giriş: {entry:.2f}\n"
-        f"SL: {sl:.2f}\n"
-        f"TP1: {tp1:.2f} (yarısını bağla, SL-i girişə çək)\n"
-        f"TP2: {tp2:.2f}\n"
-        f"Zona: {zone:.2f}\n"
-        f"Risk/mükafat: 1:{TP1 / SL:.1f} (TP1), "
-        f"1:{TP2 / SL:.1f} (TP2)\n"
-        f"Qiymət mənbəyi: {src}\n"
-        f"Broker qiyməti fərqlənə bilər.\n"
-        f"Yalnız qiymət {entry - MAX_PRICE_DRIFT:.2f}-"
-        f"{entry + MAX_PRICE_DRIFT:.2f} aralığındadırsa gir.\n"
-        f"Maliyyə məsləhəti deyil."
-    )
-
-    if atr_ratio(df) > 2.0:
-        caption += "\n⚠️ Volatillik yüksəkdir."
-
-    try:
-        send_photo(
-            make_chart(df, side, entry, zone, label),
-            caption,
+        state["pending"] = []
+        emit_entry(
+            df, state, ana, side, live, zone, label, t,
+            "M5 şam təsdiqi, setup şərtləri tamamdır",
         )
-    except Exception as e:
-        print("Şəkil göndərilmədi:", e)
-        send(caption)
+        return
 
-    state["open"].append({
-        "id": sid,
-        "ts": str(t),
-        "side": side,
-        "label": label,
-        "zone": float(zone),
-        "entry": float(entry),
-        "tp1_notified": False,
-        "vol": atr_ratio(df) > 2.0,
-    })
+    if cool:
+        print("Cooldown, siqnal ötürüldü.")
 
-    state["next_id"] = sid + 1
-
-    print(caption)
+    maybe_create_plan(df, state, t, ana)
+    print("Siqnal yoxdur.")
 
 
 def loop_forever():
