@@ -20,6 +20,10 @@ COOLDOWN_CANDLES = 12
 FRESH_MINUTES = 4.5
 BREAK_BUFFER = 1.0
 BREAK_LOOKBACK = 36
+BUY_TREND_M5 = True   # YENİ: BUY üçün M5 trendi də yuxarı olmalıdır
+BUY_MAX_DROP = 20.0   # YENİ: son 3 saatın zirvəsindən bu qədərdən çox düşübsə BUY yoxdur
+DROP_LOOKBACK = 36
+CONFIRM_BUY = True  # YENİ: BUY siqnalı bir şam gec, təsdiqdən sonra göndərilir
 MAX_PRICE_DRIFT = 1.5  # YENİ: canlı qiymət girişdən bu qədər uzaqlaşıbsa siqnal göndərilmir
 
 # YENİ: Asiya seansı bağlıdır (gecə yarısını keçən aralıq iki hissəyə bölünüb)
@@ -181,6 +185,31 @@ def cluster(levels):
     return out
 
 
+# YENİ: BUY üçün əlavə güvənlik filtri
+def buy_ok(df):
+    if not BUY_TREND_M5:
+        return True
+
+    close = df["close"]
+    e20 = close.ewm(span=20).mean()
+    e50 = close.ewm(span=50).mean()
+
+    # M5 EMA20 EMA50-dən yuxarı və yüksələn olmalıdır
+    if not (e20.iloc[-1] > e50.iloc[-1] and e20.iloc[-1] > e20.iloc[-4]):
+        return False
+
+    # qiymət EMA50-nin altında olmamalıdır
+    if close.iloc[-1] < e50.iloc[-1]:
+        return False
+
+    # sərt düşüşdən sonrakı sıçrayışa girmə
+    recent_high = df["high"].iloc[-DROP_LOOKBACK:].max()
+    if recent_high - close.iloc[-1] > BUY_MAX_DROP:
+        return False
+
+    return True
+
+
 # YENİ: trend davamı (EMA20-yə geri çəkilmə) - yalnız BUY, ayrı etiketlə
 def pullback_buy(df):
     if bias_closed(df, 60) != "BUY":
@@ -203,10 +232,13 @@ def pullback_buy(df):
     return None
 
 
-def check(df):
+def check_raw(df):
     bias = bias_closed(df, 15)
 
     if bias not in ("BUY", "SELL") or len(df) < 5:
+        return None
+
+    if bias == "BUY" and not buy_ok(df):
         return None
 
     if bias == "BUY":
@@ -278,6 +310,32 @@ def check(df):
                 )
 
     return None
+
+
+def check(df):
+    # SELL: dəyişməyib. BUY: CONFIRM_BUY açıqdırsa, siqnal şamından sonrakı
+    # şam onun high-ını yuxarı bağlayıb yaşıl olarsa göndərilir.
+    if CONFIRM_BUY and len(df) > 6:
+        prev_sig = check_raw(df.iloc[:-1])
+
+        if prev_sig and prev_sig[0] == "BUY":
+            p = df.iloc[-2]
+            c = df.iloc[-1]
+
+            if c.close > p.high and c.close > c.open:
+                return (
+                    "BUY",
+                    c.close,
+                    prev_sig[2],
+                    prev_sig[3] + " (təsdiqli)",
+                )
+
+    sig = check_raw(df)
+
+    if sig and sig[0] == "BUY" and CONFIRM_BUY:
+        return None
+
+    return sig
 
 
 def levels_for(side, entry):
