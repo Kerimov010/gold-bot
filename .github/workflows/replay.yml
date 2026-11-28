@@ -1,0 +1,23 @@
+name: gold-replay
+
+on:
+  workflow_dispatch:
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install requests pandas matplotlib
+      - name: replay
+        env:
+          TD_API_KEY: ${{ secrets.TD_API_KEY }}
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          REPLAY: "1"
+          REPLAY_DAYS: "10"
+        run: python bot.py
