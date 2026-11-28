@@ -56,6 +56,28 @@ STATE_FILE = os.environ.get("STATE_FILE", "state.json")
 MAX_HOLD = 72
 
 
+# ---------------- YENİ: PROFİL (siqnal tezliyi) ----------------
+# NORMAL: gündə təxminən 2-4 siqnal hədəfi (filtrlər yüngülləşdirilib)
+# STRICT: az siqnal, sərt filtrlər (PROFILE=STRICT ilə işə salınır)
+PROFILE = os.environ.get("PROFILE", "NORMAL").upper()
+MAX_SIGNALS_PER_DAY = 4   # artıq giriş bir UTC günündə bu qədərdən çox göndərilmir
+PLAN_NEED_H1 = True
+
+if PROFILE == "NORMAL":
+    PLAN_MIN_SCORE = 1
+    PLAN_MIN_GAP = 1.0
+    PLAN_MAX_DIST = 15.0
+    BUY_MAX_DROP = 30.0
+    PLAN_COOLDOWN_MIN = 30
+    PLAN_NEED_H1 = False
+    NO_TRADE_UTC = ["22:00-23:59", "00:00-03:59"]
+
+
+def day_count(state, t):
+    d = state.get("day") or {}
+    return d.get("n", 0) if d.get("d") == t.strftime("%Y-%m-%d") else 0
+
+
 def from_twelve():
     r = requests.get(
         "https://api.twelvedata.com/time_series",
@@ -772,8 +794,8 @@ def collect_points(df):
             roll = ser.rolling(2 * n + 1, center=True)
             ref = roll.max() if kind == "high" else roll.min()
 
-            for v in ser[ser == ref].dropna().values:
-                pts.append((float(v), w, kind, minutes))
+            for ts, v in ser[ser == ref].dropna().items():
+                pts.append((float(v), w, kind, minutes, ts))
 
     return pts
 
@@ -786,14 +808,14 @@ def day_levels(df):
 
     if prev_days:
         d = df[df.index.floor("1D") == prev_days[-1]]
-        out.append((float(d["high"].max()), 3, "high", 1440))
-        out.append((float(d["low"].min()), 3, "low", 1440))
+        out.append((float(d["high"].max()), 3, "high", 1440, d["high"].idxmax()))
+        out.append((float(d["low"].min()), 3, "low", 1440, d["low"].idxmin()))
 
     asia = df[(df.index >= today) & (df.index < today + pd.Timedelta(hours=7))]
 
     if len(asia) >= 12:
-        out.append((float(asia["high"].max()), 2, "high", 60))
-        out.append((float(asia["low"].min()), 2, "low", 60))
+        out.append((float(asia["high"].max()), 2, "high", 60, asia["high"].idxmax()))
+        out.append((float(asia["low"].min()), 2, "low", 60, asia["low"].idxmin()))
 
     return out
 
@@ -808,6 +830,7 @@ def cluster_levels(pts, gap=CLUSTER):
                 "price": sum(x[0] for x in g) / len(g),
                 "weight": sum(x[1] for x in g),
                 "n": len(g),
+                "last_ts": max(x[4] for x in g),
             })
 
     for p in pts:
@@ -859,6 +882,59 @@ def detect_sweep(df, levels, pools):
     return None
 
 
+def level_touches(df, price, since):
+    # səviyyə yarandıqdan 1 saat sonra qiymətin neçə dəfə ona toxunduğu
+    seg = df[df.index > since + pd.Timedelta(minutes=60)]
+
+    if seg.empty:
+        return 0
+
+    hit = ((seg["low"] <= price + 0.5) & (seg["high"] >= price - 0.5)).values
+    runs = int((hit[1:] & ~hit[:-1]).sum()) + (1 if hit[0] else 0)
+    return runs
+
+
+def zone_map(price, levels, score):
+    # Cassandra tipli xəritə: qərar nöqtəsi + bias + biasın istiqamətində zonalar
+    cands = [l for l in levels if l["weight"] >= 4 and abs(l["price"] - price) <= 30]
+
+    if not cands:
+        return {"bias": "NEUTRAL", "qn": None, "zones": [], "counter": [], "nearest": None}
+
+    qn = max(cands, key=lambda l: (l["weight"], -abs(l["price"] - price)))
+    q = qn["price"]
+
+    if price > q + 2 and score >= 1:
+        bias = "BUY"
+    elif price < q - 2 and score <= -1:
+        bias = "SELL"
+    else:
+        bias = "NEUTRAL"
+
+    zones, counter = [], []
+
+    if bias == "BUY":
+        zones = sorted(
+            [l for l in levels if q <= l["price"] < price - 1.0 and l is not qn],
+            key=lambda l: -l["price"],
+        )[:4]
+        counter = sorted([l for l in levels if l["price"] > price + 1.0], key=lambda l: l["price"])[:2]
+    elif bias == "SELL":
+        zones = sorted(
+            [l for l in levels if price + 1.0 < l["price"] <= q and l is not qn],
+            key=lambda l: l["price"],
+        )[:4]
+        counter = sorted([l for l in levels if l["price"] < price - 1.0], key=lambda l: -l["price"])[:2]
+
+    return {
+        "bias": bias,
+        "qn": qn,
+        "zones": zones,
+        "counter": counter,
+        "nearest": zones[0] if zones else None,
+    }
+
+
 def analyze(full):
     price = float(full["close"].iloc[-1])
     trends, score, total = {}, 0, 0
@@ -884,6 +960,12 @@ def analyze(full):
 
     direction = "BUY" if score >= 4 else ("SELL" if score <= -4 else "NEUTRAL")
 
+    for l in levels:
+        l["touches"] = level_touches(full, l["price"], l["last_ts"])
+        l["fresh"] = l["touches"] == 0
+
+    zmap = zone_map(price, levels, score)
+
     return {
         "price": price,
         "trends": trends,
@@ -895,6 +977,7 @@ def analyze(full):
         "liq_above": min((p for p in pools["high"] if p > price), default=None),
         "liq_below": max((p for p in pools["low"] if p < price), default=None),
         "sweep": detect_sweep(full, levels, pools),
+        "zmap": zmap,
     }
 
 
@@ -916,25 +999,56 @@ def ana_summary(ana):
     )
 
 
+def zone_line(l):
+    tag = "🆕 fresh" if l.get("fresh") else f"{l.get('touches', 0)} toxunuş"
+    return f"• {l['price']:.1f} (×{l['weight']}) {tag}"
+
+
 def make_report(ana, t):
+    z = ana["zmap"]
     la = f"{ana['liq_above']:.1f}" if ana["liq_above"] else "yoxdur"
     lb = f"{ana['liq_below']:.1f}" if ana["liq_below"] else "yoxdur"
+    icon = {"BUY": "📈", "SELL": "📉", "NEUTRAL": "⚖️"}[z["bias"]]
+    word = {"BUY": "BUY", "SELL": "SELL", "NEUTRAL": "NEYTRAL"}[z["bias"]]
 
-    txt = (
-        f"📊 BAZAR ANALİZİ | GOLD | {t.strftime('%H:%M')} UTC\n"
-        f"Qiymət: {ana['price']:.2f}\n"
-        f"Trend: {trend_line(ana)}\n"
-        f"Ümumi istiqamət: {ana['direction']} "
-        f"({ana['score']:+d}/{ana['total']})\n\n"
-        f"Müqavimət: {fmt_levels(ana['res'])}\n"
-        f"Dəstək: {fmt_levels(ana['sup'])}\n"
-        f"Likvidlik: yuxarıda {la}, aşağıda {lb}\n"
-    )
+    txt = f"📊 BAZAR XƏRİTƏSİ | GOLD | {t.strftime('%H:%M')} UTC\n"
+    txt += f"{icon} Bias: {word}\n"
+    txt += f"Qiymət: {ana['price']:.2f}"
+
+    if z["qn"]:
+        txt += f" | Qərar nöqtəsi: {z['qn']['price']:.1f} (×{z['qn']['weight']})"
+
+    txt += f"\nTrend: {trend_line(ana)} ({ana['score']:+d}/{ana['total']})\n\n"
+
+    if z["bias"] == "BUY":
+        txt += "🟢 Alış zonaları (bias istiqamətində):\n"
+    elif z["bias"] == "SELL":
+        txt += "🔴 Satış zonaları (bias istiqamətində):\n"
+
+    if z["zones"]:
+        txt += "\n".join(zone_line(l) for l in z["zones"]) + "\n"
+        n = z["nearest"]
+        txt += f"🎯 Ən yaxın zona: {n['price']:.1f}"
+        txt += " (fresh)\n" if n.get("fresh") else "\n"
+    elif z["bias"] == "NEUTRAL":
+        txt += (
+            "Bias aydın deyil: qiymət qərar nöqtəsinə yaxındır, ya da "
+            "timeframe-lər ziddiyyətlidir. Girmə, gözlə.\n"
+            f"Müqavimət: {fmt_levels(ana['res'], 2)}\n"
+            f"Dəstək: {fmt_levels(ana['sup'], 2)}\n"
+        )
+    else:
+        txt += "Biasın istiqamətində yaxın zona yoxdur.\n"
+
+    if z["counter"]:
+        txt += "⛔ Bias tərsi (girmə): " + ", ".join(f"{l['price']:.1f}" for l in z["counter"]) + "\n"
+
+    txt += f"Likvidlik: yuxarıda {la}, aşağıda {lb}\n"
 
     if ana["sweep"]:
         txt += f"Son süpürmə: {ana['sweep']}\n"
 
-    txt += "(×N: səviyyənin çəkisi, böyük timeframe-lər daha ağırdır)\n"
+    txt += "(×N: çəki, fresh: səviyyəyə hələ toxunulmayıb)\n"
     txt += "Maliyyə məsləhəti deyil."
     return txt
 
@@ -1020,7 +1134,10 @@ def make_plan(df, ana):
     b60 = bias_closed(df, 60)
 
     for side in ("BUY", "SELL"):
-        if b15 != side or b60 != side:
+        opp = "SELL" if side == "BUY" else "BUY"
+        if b15 != side or b60 == opp:
+            continue
+        if PLAN_NEED_H1 and b60 != side:
             continue
 
         gap = c - e20 if side == "BUY" else e20 - c
@@ -1074,18 +1191,24 @@ def make_chart_pro(df, ana, side=None, entry=None, zone=None, title="", count=12
     lo, hi = min(ys) - 4, max(ys) + 4
     lbl = dict(facecolor=bg, edgecolor="none", pad=1.0, alpha=0.75)
 
+    qn = ana["zmap"]["qn"]
+    if qn and lo <= qn["price"] <= hi:
+        ax.hlines(qn["price"], 0, n - 1, colors="#f0b90b", linewidth=2.4, alpha=0.9)
+        ax.text(n - 1, qn["price"], "QƏRAR NÖQTƏSİ " + format(qn["price"], ".1f"),
+                color="#f0b90b", ha="right", va="bottom", fontsize=8.5, bbox=lbl)
+
     for l in ana["res"][:5]:
         if lo <= l["price"] <= hi:
             ax.hlines(l["price"], 0, n - 1, colors="#ff7b72", linestyles="--",
                       linewidth=0.7 + 0.2 * min(l["weight"], 8), alpha=0.85)
-            ax.text(0.5, l["price"], "R " + format(l["price"], ".1f") + " ×" + str(l["weight"]),
+            ax.text(0.5, l["price"], "R " + format(l["price"], ".1f") + " ×" + str(l["weight"]) + (" ★" if l.get("fresh") else ""),
                     color="#ff7b72", va="bottom", fontsize=7.5, bbox=lbl)
 
     for l in ana["sup"][:5]:
         if lo <= l["price"] <= hi:
             ax.hlines(l["price"], 0, n - 1, colors="#3fb950", linestyles="--",
                       linewidth=0.7 + 0.2 * min(l["weight"], 8), alpha=0.85)
-            ax.text(0.5, l["price"], "S " + format(l["price"], ".1f") + " ×" + str(l["weight"]),
+            ax.text(0.5, l["price"], "S " + format(l["price"], ".1f") + " ×" + str(l["weight"]) + (" ★" if l.get("fresh") else ""),
                     color="#3fb950", va="top", fontsize=7.5, bbox=lbl)
 
     for key, arrow in (("liq_above", "↑"), ("liq_below", "↓")):
@@ -1194,6 +1317,8 @@ def emit_entry(df, state, ana, side, entry, zone, label, ts, confirm_text, plan_
     })
     state["next_id"] = sid + 1
     state["last_entry_ts"] = str(ts)
+    dkey = pd.Timestamp(ts).strftime("%Y-%m-%d")
+    state["day"] = {"d": dkey, "n": day_count(state, pd.Timestamp(ts)) + 1}
     print(caption)
 
 
@@ -1326,9 +1451,23 @@ def process_pending(df, state, ana):
             continue
 
         ccl = float(conf["close"].iloc[0])
-        ok, why = entry_gates(df, ana, side, ccl)
-        if ok and bias_closed(df, 15) != side:
+
+        # filtrlər təsdiq şamının öz anındakı məlumatla yoxlanır (ən son şamla yox)
+        df_cc = df[df.index <= cc]
+        ok, why = entry_gates(df_cc, ana, side, ccl)
+        if ok and bias_closed(df_cc, 15) != side:
             ok, why = False, "M15 trend dəyişib"
+
+        # təsdiqdən sonrakı şam girişi pozubsa, təsdiq köhnəlib
+        later = df[df.index > cc]
+        if ok and len(later):
+            back = (
+                (later["close"] < entry).any()
+                if side == "BUY"
+                else (later["close"] > entry).any()
+            )
+            if back:
+                ok, why = False, "təsdiqdən sonrakı şam giriş zonasına qayıtdı"
 
         if not ok:
             send(f"⚠️ Plan {tag}: təsdiq gəldi, amma {why}. Girmə.")
@@ -1342,6 +1481,10 @@ def process_pending(df, state, ana):
 
         if abs(live - ccl) > MAX_PRICE_DRIFT:
             send(f"⚠️ Plan {tag}: təsdiq gəldi, amma qiymət qaçıb ({live:.2f}). Girmə.")
+            continue
+
+        if day_count(state, cc) >= MAX_SIGNALS_PER_DAY:
+            send(f"⚠️ Plan {tag}: gündəlik limit ({MAX_SIGNALS_PER_DAY}) dolub. Girmə.")
             continue
 
         col = "yaşıl" if side == "BUY" else "qırmızı"
@@ -1404,6 +1547,10 @@ def _run(state):
         print("Son girişdən sonra gözləmə müddəti.")
         return
 
+    if day_count(state, t) >= MAX_SIGNALS_PER_DAY:
+        print("Gündəlik siqnal limiti dolub.")
+        return
+
     if ana is None:
         print("Analiz yoxdur, yeni giriş axtarılmır.")
         return
@@ -1452,6 +1599,73 @@ def _run(state):
     print("Siqnal yoxdur.")
 
 
+def run_replay(days=10):
+    # tarixi məlumatda botu şam-şam təkrar işlədir və siqnal tezliyini/nəticəni göstərir
+    import contextlib
+
+    g = globals()
+    full, _, _ = get_m5()
+    keep = {k: g[k] for k in ("send", "send_photo", "live_price", "get_m5", "make_chart_pro", "REPORT_EVERY_MIN")}
+    real_send = keep["send"]
+    state = {"next_id": 1, "open": [], "closed": [], "pending": [], "next_plan": 1}
+    cur = {"i": 0, "t": None}
+
+    g["send"] = lambda x: None
+    g["send_photo"] = lambda b, c: None
+    g["make_chart_pro"] = lambda *a, **k: None
+    g["REPORT_EVERY_MIN"] = 10 ** 6
+    g["get_m5"] = lambda: (full.iloc[:cur["i"] + 1], cur["t"], "replay")
+    g["live_price"] = lambda: float(full["close"].iloc[cur["i"]])
+
+    start = max(len(full) - days * 288, 1600)
+
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            for i in range(start, len(full)):
+                cur["i"] = i
+                cur["t"] = full.index[i] + pd.Timedelta(minutes=6)
+                try:
+                    _run(state)
+                except Exception as e:
+                    print("xəta", e)
+
+            cur["i"] = len(full) - 1
+            process_open(full.iloc[-1500:], state)
+    finally:
+        for k, v in keep.items():
+            g[k] = v
+
+    rows = state["closed"] + state["open"]
+    by_day = {}
+    for r in rows:
+        d = str(r["ts"])[:10]
+        by_day[d] = by_day.get(d, 0) + 1
+
+    n_days = len({str(x)[:10] for x in full.index[start:]}) or 1
+    cnt = {k: sum(1 for r in state["closed"] if r["outcome"] == k) for k in ("TP2", "BE", "SL", "TIME")}
+    pnl = sum(r["gross"] for r in state["closed"])
+
+    lines = [
+        f"🔁 TƏKRAR TEST | profil {PROFILE} | {full.index[start].strftime('%d.%m')}-{full.index[-1].strftime('%d.%m')}",
+        f"Cəmi giriş: {len(rows)} ({len(rows) / n_days:.1f}/gün, {n_days} gün)",
+        f"TP2: {cnt['TP2']} | BE: {cnt['BE']} | SL: {cnt['SL']} | vaxt: {cnt['TIME']}",
+        f"Cəmi nəticə ≈ {pnl:+.1f}$ (0.01 lot, spreadsiz)",
+    ]
+
+    for side in ("BUY", "SELL"):
+        sub = [r for r in state["closed"] if r["side"] == side]
+        if sub:
+            sl = sum(1 for r in sub if r["outcome"] == "SL")
+            lines.append(f"{side}: {len(sub)} giriş, SL {sl}, nəticə {sum(r['gross'] for r in sub):+.1f}$")
+
+    lines.append("Gündəlik: " + ", ".join(f"{d[5:]}:{n}" for d, n in sorted(by_day.items())))
+    lines.append("Bu yalnız keçmiş məlumatdır, gələcəyi göstərmir. Maliyyə məsləhəti deyil.")
+
+    text = "\n".join(lines)
+    print(text)
+    real_send(text[:3900])
+
+
 def loop_forever():
     # fasiləsiz rejim: server/kompüterdə işləyəndə hər M5 şamından sonra bir dəfə analiz
     while True:
@@ -1475,6 +1689,10 @@ def main():
 
 
 if __name__ == "__main__":
+    if os.environ.get("REPLAY") == "1":
+        run_replay(int(os.environ.get("REPLAY_DAYS", "10")))
+        raise SystemExit
+
     if os.environ.get("LOOP") == "1":
         loop_forever()
         raise SystemExit
